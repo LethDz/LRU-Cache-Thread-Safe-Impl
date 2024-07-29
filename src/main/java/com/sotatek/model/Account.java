@@ -4,6 +4,15 @@ public class Account implements Comparable<Account> {
 	private Long id;
 	private Long balance;
 
+	/**
+	 * @param id
+	 * @param balance
+	 */
+	public Account(Long id, Long balance) {
+		this.id = id;
+		this.balance = balance;
+	}
+
 	@Override
 	public int compareTo(Account targetAccount) {
 		return this.balance.compareTo(targetAccount.balance);

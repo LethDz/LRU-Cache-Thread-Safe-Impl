@@ -1,13 +1,14 @@
 package com.sotatek.utils;
 
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -15,26 +16,26 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 	private final int capacity;
 	private final int topCapacity;
 	private final Map<K, V> cache;
-	private final PriorityQueue<CacheEntry<K>> priorityQueue;
-	private final SortedMap<V, K> sortedCache;
+	private final AtomicReference<PriorityQueue<CacheEntry<K>>> priorityQueue;
+	private final AtomicReference<SortedMap<V, K>> sortedCache;
 	private final AtomicInteger hits = new AtomicInteger(0);
 	private Consumer<V> listener;
 
 	protected LRUCache(int capacity, int topCapacity) {
 		this.capacity = capacity;
 		this.topCapacity = topCapacity;
-		this.cache = new HashMap<>(capacity);
-		this.priorityQueue = new PriorityQueue<>(capacity,
-				(first, second) -> first.accessTime.compareTo(second.accessTime));
-		this.sortedCache = new TreeMap<>((o1, o2) -> o2.compareTo(o1));
+		this.cache = new ConcurrentHashMap<>(capacity);
+		this.priorityQueue = new AtomicReference<>(new PriorityQueue<>(capacity,
+				(first, second) -> first.accessTime.compareTo(second.accessTime)));
+		this.sortedCache = new AtomicReference<>(new TreeMap<>((o1, o2) -> o2.compareTo(o1)));
 	}
 
 	public V get(K key) {
 		if (cache.containsKey(key)) {
 			// Update access time
 			CacheEntry<K> newAccessTime = new CacheEntry<>(key);
-			priorityQueue.remove(newAccessTime);
-			priorityQueue.offer(newAccessTime);
+			priorityQueue.get().remove(newAccessTime);
+			priorityQueue.get().offer(newAccessTime);
 			hits.incrementAndGet();
 			return cache.get(key);
 		}
@@ -52,13 +53,13 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 		} else {
 			if (cache.size() >= capacity) {
 				// Evict the least recently used key
-				CacheEntry<K> evicted = priorityQueue.poll();
+				CacheEntry<K> evicted = priorityQueue.get().poll();
 				if (evicted != null) {
 					evictedValue = cache.remove(evicted.key);
 				}
 			}
 			cache.put(key, value);
-			priorityQueue.offer(new CacheEntry<>(key));
+			priorityQueue.get().offer(new CacheEntry<>(key));
 		}
 		// Put new key-value pair to sorted map
 		this.putInSortedMap(key, value, evictedValue);
@@ -66,39 +67,39 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 	}
 
 	private void putInSortedMap(K key, V value, V evictedValue) {
-		if (sortedCache.containsKey(value)) {
-			sortedCache.put(value, key);
+		K changedValue = sortedCache.get().computeIfPresent(value, (k, v) -> key);
+		if (changedValue != null) {
 			return;
 		}
 
 		if (evictedValue != null) {
-			sortedCache.remove(evictedValue);
+			sortedCache.get().remove(evictedValue);
 		}
 
 		V lowestValue;
 		try {
-			lowestValue = sortedCache.lastKey();
+			lowestValue = sortedCache.get().lastKey();
 		} catch (Exception e) {
 			lowestValue = null;
 		}
 
-		if (sortedCache.size() >= topCapacity) {
+		if (sortedCache.get().size() >= topCapacity) {
 			if (value.compareTo(lowestValue) >= 0) {
-				sortedCache.remove(lowestValue);
-				sortedCache.put(value, key);
+				sortedCache.get().remove(lowestValue);
+				sortedCache.get().put(value, key);
 			}
 
 			return;
 		}
 
-		sortedCache.put(value, key);
+		sortedCache.get().put(value, key);
 	}
 
 	public List<V> getTopCacheElements(int numberOfElements) {
 		if (numberOfElements > topCapacity) {
 			throw new IllegalArgumentException("The number of elements larger than the capacity");
 		}
-		return sortedCache.keySet().stream().limit(numberOfElements).collect(Collectors.toList());
+		return sortedCache.get().keySet().stream().limit(numberOfElements).collect(Collectors.toList());
 	}
 
 	public int getHits() {
