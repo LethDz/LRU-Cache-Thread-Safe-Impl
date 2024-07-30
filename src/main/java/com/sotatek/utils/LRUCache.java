@@ -1,12 +1,11 @@
 package com.sotatek.utils;
 
-import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -16,7 +15,6 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 	private final int capacity;
 	private final int topCapacity;
 	private final Map<K, V> cache;
-	private final AtomicReference<PriorityQueue<CacheEntry<K>>> priorityQueue;
 	private final AtomicReference<SortedMap<V, K>> sortedCache;
 	private final AtomicInteger hits = new AtomicInteger(0);
 	private Consumer<V> listener;
@@ -24,18 +22,21 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 	protected LRUCache(int capacity, int topCapacity) {
 		this.capacity = capacity;
 		this.topCapacity = topCapacity;
-		this.cache = new ConcurrentHashMap<>(capacity);
-		this.priorityQueue = new AtomicReference<>(new PriorityQueue<>(capacity,
-				(first, second) -> first.accessTime.compareTo(second.accessTime)));
+		this.cache = Collections.synchronizedMap(new LinkedHashMap<>(this.capacity) {
+			@Override
+			protected boolean removeEldestEntry(java.util.Map.Entry<K, V> eldest) {
+				boolean mustEvictTheEldest = size() > capacity;
+				if (mustEvictTheEldest) {
+					sortedCache.get().remove(eldest.getValue());
+				}
+				return mustEvictTheEldest;
+			}
+		});
 		this.sortedCache = new AtomicReference<>(new TreeMap<>((o1, o2) -> o2.compareTo(o1)));
 	}
 
 	public V get(K key) {
 		if (cache.containsKey(key)) {
-			// Update access time
-			CacheEntry<K> newAccessTime = new CacheEntry<>(key);
-			priorityQueue.get().remove(newAccessTime);
-			priorityQueue.get().offer(newAccessTime);
 			hits.incrementAndGet();
 			return cache.get(key);
 		}
@@ -43,7 +44,6 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 	}
 
 	public void put(K key, V value) {
-		V evictedValue = null;
 		// Put new key-value pair
 		if (cache.containsKey(key)) {
 			V currentValue = cache.get(key);
@@ -51,29 +51,17 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 				updateAccount(currentValue, value);
 			}
 		} else {
-			if (cache.size() >= capacity) {
-				// Evict the least recently used key
-				CacheEntry<K> evicted = priorityQueue.get().poll();
-				if (evicted != null) {
-					evictedValue = cache.remove(evicted.key);
-				}
-			}
 			cache.put(key, value);
-			priorityQueue.get().offer(new CacheEntry<>(key));
 		}
 		// Put new key-value pair to sorted map
-		this.putInSortedMap(key, value, evictedValue);
+		this.putInSortedMap(key, value);
 		listener.accept(value);
 	}
 
-	private void putInSortedMap(K key, V value, V evictedValue) {
+	private void putInSortedMap(K key, V value) {
 		K changedValue = sortedCache.get().computeIfPresent(value, (k, v) -> key);
 		if (changedValue != null) {
 			return;
-		}
-
-		if (evictedValue != null) {
-			sortedCache.get().remove(evictedValue);
 		}
 
 		V lowestValue;
@@ -108,44 +96,6 @@ public abstract class LRUCache<K, V extends Comparable<V>> {
 
 	public void delegateListener(Consumer<V> listener) {
 		this.listener = listener;
-	}
-
-	private static class CacheEntry<K> {
-		K key;
-		Instant accessTime;
-
-		CacheEntry(K key) {
-			this.key = key;
-			this.accessTime = Instant.now();
-		}
-
-		@Override
-		public int hashCode() {
-			final int prime = 31;
-			int result = 1;
-			result = prime * result + ((key == null) ? 0 : key.hashCode());
-			return result;
-		}
-
-		@Override
-		@SuppressWarnings("unchecked")
-		public boolean equals(Object obj) {
-			if (this == obj)
-				return true;
-			if (obj == null)
-				return false;
-			if (getClass() != obj.getClass())
-				return false;
-			CacheEntry<K> other = (CacheEntry<K>) obj;
-
-			if (key == null) {
-				if (other.key != null)
-					return false;
-			} else if (!key.equals(other.key))
-				return false;
-
-			return true;
-		}
 	}
 
 	abstract void updateAccount(V currentValue, V newValue);
